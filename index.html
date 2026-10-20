@@ -1,0 +1,528 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bounce Shuffle</title>
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icons/icon-192.png">
+<meta name="theme-color" content="#2f6fdf">
+<style>
+  :root {
+    --bg: #f6f5f2; --fg: #1d1d1b; --muted: #6b6a66; --line: #dddbd5;
+    --card: #ffffff; --accent: #2f6fdf; --now: #e8effc; --warn: #b4441c;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #161615; --fg: #ebeae6; --muted: #9a9993; --line: #33322f;
+      --card: #1f1f1d; --accent: #7aa5f5; --now: #22304a; --warn: #f08a62;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  main { max-width: 720px; margin: 0 auto; padding: 24px 16px 48px; }
+  h1 { font-size: 20px; margin: 0 0 16px; }
+  .bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  button {
+    font: inherit; padding: 6px 14px; border-radius: 8px; cursor: pointer;
+    border: 1px solid var(--line); background: var(--card); color: var(--fg);
+  }
+  button:hover { border-color: var(--accent); }
+  button:disabled { opacity: .4; cursor: default; border-color: var(--line); }
+  button.icon { display: inline-flex; align-items: center; justify-content: center; padding: 4px 10px; }
+  #status { color: var(--muted); font-size: 13px; margin: 8px 0 20px; min-height: 1.5em; }
+  #status.warn { color: var(--warn); }
+  .player {
+    background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+    padding: 16px; margin-bottom: 20px;
+    /* Stays in view while the list scrolls; the shadow masks rows above it. */
+    position: sticky; top: 8px; z-index: 1;
+    box-shadow: 0 -8px 0 8px var(--bg);
+  }
+  #title { font-size: 17px; font-weight: 600; margin: 0 0 12px; overflow-wrap: anywhere; }
+  audio { width: 100%; margin-bottom: 12px; }
+  ol { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--line); }
+  li {
+    display: flex; gap: 12px; align-items: baseline; padding: 8px 10px;
+    border-bottom: 1px solid var(--line); cursor: pointer;
+  }
+  li:hover { background: var(--card); }
+  li.now { background: var(--now); font-weight: 600; }
+  li.now .n { color: var(--accent); }
+  li.played { opacity: .45; }
+  .folder { font-size: 14px; margin-right: 4px; }
+  .folder b { font-weight: 600; }
+  ol.history li { opacity: .4; cursor: default; }
+  ol.history li:hover { background: none; }
+  li .n { color: var(--muted); font-size: 12px; width: 2em; text-align: right; flex: none; }
+  li .t { flex: 1; overflow-wrap: anywhere; }
+  li .d, li .len { color: var(--muted); font-size: 12px; flex: none; }
+  li .len { font-variant-numeric: tabular-nums; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Bounce Shuffle</h1>
+  <div class="bar">
+    <span id="folder" class="folder">No folder</span>
+    <button id="resume" hidden>Resume access</button>
+    <button id="pick">Choose folder</button>
+  </div>
+  <p id="status"></p>
+
+  <section class="player">
+    <p id="title">No track</p>
+    <audio id="audio" controls></audio>
+    <div class="bar">
+      <!-- skip_next from Material Icons (Apache-2.0) -->
+      <button id="next" class="icon" title="Next" aria-label="Next" disabled>
+        <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path fill="currentColor" d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/></svg>
+      </button>
+      <!-- shuffle from Lucide (ISC) -->
+      <button id="reshuffle" class="icon" title="Reshuffle" aria-label="Reshuffle" disabled>
+        <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M2 18h1.4c1.3 0 2.5-.6 3.3-1.7l6.1-8.6c.7-1.1 2-1.7 3.3-1.7H22"/>
+          <path d="m18 2 4 4-4 4"/>
+          <path d="M2 6h1.9c1.5 0 2.9.9 3.6 2.2"/>
+          <path d="M22 18h-5.9c-1.3 0-2.6-.7-3.3-1.8l-.5-.8"/>
+          <path d="m18 14 4 4-4 4"/>
+        </svg>
+      </button>
+    </div>
+  </section>
+
+  <ol id="list"></ol>
+</main>
+
+<script>
+'use strict';
+
+// Files are named <prefix>_<title>_<version>.<ext>; the first two parts name
+// the track, so every export of one track shares a key. The newest export by
+// modification time is the one that plays.
+const AUDIO_EXT = /\.(aiff?|aifc|wav|mp3|m4a|aac|flac|ogg|opus)$/i;
+const AIFF_EXT = /\.(aiff?|aifc)$/i;
+
+function trackKey(name) {
+  const base = name.replace(/\.[^.]+$/, '');
+  return base.split('_').slice(0, 2).join('_');
+}
+
+// --- IndexedDB: remembers the chosen folder between visits ---
+
+function db() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open('bounce-shuffle', 1);
+    req.onupgradeneeded = () => req.result.createObjectStore('kv');
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function kv(mode, fn) {
+  const d = await db();
+  return new Promise((resolve, reject) => {
+    const tx = d.transaction('kv', mode);
+    const req = fn(tx.objectStore('kv'));
+    tx.oncomplete = () => resolve(req.result);
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+const loadDir = () => kv('readonly', s => s.get('dir'));
+const saveDir = h => kv('readwrite', s => s.put(h, 'dir'));
+// The last list seen, shown greyed out while the folder cannot be read.
+const loadLast = () => kv('readonly', s => s.get('last'));
+const saveLast = list => kv('readwrite', s => s.put(list, 'last'));
+
+// --- AIFF -> WAV ---
+// Chrome's media stack does not play AIFF. AIFF is uncompressed PCM, so the
+// samples are byte-swapped to little-endian and given a WAV header; the
+// <audio> element then streams it, which keeps memory to one copy of the file.
+
+function readExtended(view, off) {
+  // 80-bit IEEE 754 extended float, used for the sample rate.
+  const exp = view.getUint16(off) & 0x7fff;
+  const hi = view.getUint32(off + 2);
+  const lo = view.getUint32(off + 6);
+  if (exp === 0 && hi === 0 && lo === 0) return 0;
+  return (hi * 2 ** 32 + lo) * 2 ** (exp - 16383 - 63);
+}
+
+function aiffToWav(buf) {
+  const view = new DataView(buf);
+  const tag = (o) => String.fromCharCode(...new Uint8Array(buf, o, 4));
+  if (tag(0) !== 'FORM') throw new Error('not an AIFF file');
+  const form = tag(8);
+  if (form !== 'AIFF' && form !== 'AIFC') throw new Error('not an AIFF file');
+
+  let comm = null, ssnd = null;
+  for (let off = 12; off + 8 <= buf.byteLength;) {
+    const id = tag(off), size = view.getUint32(off + 4), body = off + 8;
+    if (id === 'COMM') {
+      comm = {
+        channels: view.getInt16(body),
+        bits: view.getInt16(body + 6),
+        rate: readExtended(view, body + 8),
+        comp: form === 'AIFC' ? tag(body + 18) : 'NONE',
+      };
+    } else if (id === 'SSND') {
+      const start = body + 8 + view.getUint32(body);
+      ssnd = { start, end: Math.min(body + size, buf.byteLength) };
+    }
+    off = body + size + (size & 1);
+  }
+  if (!comm || !ssnd) throw new Error('AIFF is missing COMM or SSND');
+  if (comm.comp !== 'NONE' && comm.comp !== 'sowt') {
+    throw new Error(`unsupported AIFF-C compression "${comm.comp}"`);
+  }
+
+  const bytes = Math.ceil(comm.bits / 8);
+  const frame = bytes * comm.channels;
+  const len = ssnd.end - ssnd.start - ((ssnd.end - ssnd.start) % frame);
+  const data = new Uint8Array(buf, ssnd.start, len);
+  const pcm = new Uint8Array(len);
+  if (comm.comp === 'sowt') {
+    pcm.set(data);
+  } else {
+    for (let i = 0; i < len; i += bytes) {
+      for (let b = 0; b < bytes; b++) pcm[i + b] = data[i + bytes - 1 - b];
+    }
+  }
+  if (bytes === 1) {
+    // 8-bit AIFF is signed, 8-bit WAV is unsigned.
+    for (let i = 0; i < len; i++) pcm[i] ^= 0x80;
+  }
+
+  const head = new DataView(new ArrayBuffer(44));
+  const str = (o, s) => [...s].forEach((c, i) => head.setUint8(o + i, c.charCodeAt(0)));
+  const rate = Math.round(comm.rate);
+  str(0, 'RIFF'); head.setUint32(4, 36 + len, true); str(8, 'WAVE');
+  str(12, 'fmt '); head.setUint32(16, 16, true); head.setUint16(20, 1, true);
+  head.setUint16(22, comm.channels, true); head.setUint32(24, rate, true);
+  head.setUint32(28, rate * frame, true); head.setUint16(32, frame, true);
+  head.setUint16(34, bytes * 8, true);
+  str(36, 'data'); head.setUint32(40, len, true);
+  return new Blob([head, pcm], { type: 'audio/wav' });
+}
+
+// --- Durations ---
+// AIFF durations come from the COMM chunk, read a few bytes at a time so a
+// whole file is never loaded just to time it. Other formats ask the browser.
+
+const durations = new Map(); // `${name}|${lastModified}` -> seconds
+
+async function aiffDuration(file) {
+  const read = async (start, len) => new DataView(await file.slice(start, start + len).arrayBuffer());
+  for (let off = 12; off + 8 <= file.size;) {
+    const head = await read(off, 8);
+    const id = String.fromCharCode(...new Uint8Array(head.buffer, 0, 4));
+    const size = head.getUint32(4);
+    if (id === 'COMM') {
+      const body = await read(off + 8, 18);
+      return body.getUint32(2) / readExtended(body, 8);
+    }
+    off += 8 + size + (size & 1);
+  }
+  throw new Error('AIFF has no COMM chunk');
+}
+
+function mediaDuration(file) {
+  return new Promise((resolve, reject) => {
+    const a = new Audio();
+    const url = URL.createObjectURL(file);
+    const done = (fn, v) => { URL.revokeObjectURL(url); fn(v); };
+    a.onloadedmetadata = () => done(resolve, a.duration);
+    a.onerror = () => done(reject, new Error('unreadable'));
+    a.preload = 'metadata';
+    a.src = url;
+  });
+}
+
+async function durationOf(file) {
+  const id = `${file.name}|${file.lastModified}`;
+  if (!durations.has(id)) {
+    const sec = await (AIFF_EXT.test(file.name) ? aiffDuration(file) : mediaDuration(file)).catch(() => NaN);
+    durations.set(id, sec);
+  }
+  return durations.get(id);
+}
+
+function formatTime(sec) {
+  const s = Math.round(sec);
+  const h = Math.floor(s / 3600), m = Math.floor(s / 60) % 60, r = String(s % 60).padStart(2, '0');
+  return h ? `${h}:${String(m).padStart(2, '0')}:${r}` : `${m}:${r}`;
+}
+
+// --- Folder scan ---
+
+let dir = null;
+let tracks = new Map(); // key -> File (newest export)
+
+async function canRead(handle) {
+  return (await handle.queryPermission({ mode: 'read' })) === 'granted';
+}
+
+async function scan() {
+  const files = [];
+  for await (const entry of dir.values()) {
+    if (entry.kind === 'file' && AUDIO_EXT.test(entry.name)) files.push(entry.getFile());
+  }
+  const next = new Map();
+  for (const file of await Promise.all(files)) {
+    const key = trackKey(file.name);
+    const cur = next.get(key);
+    if (!cur || file.lastModified > cur.lastModified) next.set(key, file);
+  }
+  tracks = next;
+}
+
+// Rescanning never prompts: if access has lapsed the current list keeps
+// playing, and the Resume button offers to restore it.
+async function rescan() {
+  if (!dir) return;
+  try {
+    if (!(await canRead(dir))) throw new Error('lapsed');
+    await scan();
+    setFolder(dir.name);
+    const secs = await Promise.all([...tracks.values()].map(durationOf));
+    const last = [...tracks.values()].map((f, i) => ({ name: f.name, lastModified: f.lastModified, sec: secs[i] }));
+    saveLast(last).catch(() => {});
+    const total = formatTime(secs.filter(Number.isFinite).reduce((a, b) => a + b, 0));
+    setStatus(`${tracks.size} tracks (${total}) in "${dir.name}" - checked ${new Date().toLocaleTimeString()}`);
+  } catch {
+    setFolder(dir.name, true);
+    setStatus('Folder access paused - playing the last known list. Press Resume access to pick up new exports.', true);
+  }
+}
+
+// --- Queue ---
+
+// A round is one shuffled pass over the tracks. Its order is what the list
+// shows and it stays put while playing, so a place in it is easy to keep.
+let order = [];
+let pos = -1; // index in order of the track playing; earlier ones are played
+let current = null;
+let objectUrl = null;
+let failures = 0;
+let playSeq = 0; // a quicker Next press supersedes a track still being read
+
+function shuffle(a) {
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+// keepCurrent puts the track playing first and shuffles the rest behind it.
+function newRound(keepCurrent = false) {
+  const keys = shuffle([...tracks.keys()]);
+  if (keepCurrent && current && tracks.has(current)) {
+    order = [current, ...keys.filter(k => k !== current)];
+    pos = 0;
+  } else {
+    order = keys;
+    // Avoid the same track twice in a row across rounds.
+    if (order.length > 1 && order[0] === current) order.push(order.shift());
+    pos = -1;
+  }
+}
+
+// Fold a rescan into the round: drop tracks that disappeared, slot new ones in
+// at random positions among the tracks not yet played.
+function syncOrder() {
+  const played = order.slice(0, pos + 1).filter(k => tracks.has(k)).length;
+  const known = new Set(order);
+  order = order.filter(k => tracks.has(k));
+  pos = played - 1;
+  for (const k of tracks.keys()) {
+    if (known.has(k)) continue;
+    const at = pos + 1 + Math.floor(Math.random() * (order.length - pos));
+    order.splice(at, 0, k);
+  }
+}
+
+// atEnd is the track having finished by itself: the last one in the round
+// then stops playback. Next past the last one starts a new round instead.
+async function advance(atEnd = false) {
+  await rescan();
+  syncOrder();
+  if (pos + 1 >= order.length) {
+    if (atEnd) {
+      current = null;
+      pos = order.length;
+      render();
+      setStatus(`Played all ${order.length} tracks. Press Next or Reshuffle for another round.`);
+      return;
+    }
+    newRound();
+  }
+  await play(order[pos + 1]);
+}
+
+// start=false loads the track without playing it, so the player's own play
+// button works straight after a reload.
+async function play(key, start = true) {
+  if (!tracks.has(key)) return;
+  pos = order.indexOf(key);
+  current = key;
+  const file = tracks.get(key);
+  const seq = ++playSeq;
+  render();
+  try {
+    const src = AIFF_EXT.test(file.name) ? aiffToWav(await file.arrayBuffer()) : file;
+    if (seq !== playSeq) return;
+    if (objectUrl) URL.revokeObjectURL(objectUrl);
+    objectUrl = URL.createObjectURL(src);
+    audio.src = objectUrl;
+    if (start) await audio.play();
+    failures = 0;
+    updateMediaSession(key, file);
+  } catch (e) {
+    if (seq !== playSeq || e.name === 'AbortError') return;
+    if (e.name === 'NotAllowedError') {
+      setStatus('Press play to start - the browser blocked autoplay.', true);
+      return;
+    }
+    setStatus(`Skipped ${file.name}: ${e.message}`, true);
+    if (++failures < tracks.size) advance(true);
+  }
+}
+
+// --- UI ---
+
+const $ = id => document.getElementById(id);
+const audio = $('audio');
+
+function setStatus(msg, warn = false) {
+  $('status').textContent = msg;
+  $('status').classList.toggle('warn', warn);
+}
+
+function setFolder(name, paused = false) {
+  const el = $('folder');
+  if (name) {
+    const b = document.createElement('b');
+    b.textContent = name;
+    el.replaceChildren('Folder: ', b, paused ? ' (access paused)' : '');
+  } else {
+    el.textContent = 'No folder';
+  }
+  $('pick').textContent = name ? 'Change folder' : 'Choose folder';
+  $('resume').hidden = !paused;
+}
+
+function listRow(n, name, sec, lastModified) {
+  const li = document.createElement('li');
+  li.innerHTML = '<span class="n"></span><span class="t"></span><span class="len"></span><span class="d"></span>';
+  li.querySelector('.n').textContent = n;
+  li.querySelector('.t').textContent = name;
+  li.querySelector('.len').textContent = Number.isFinite(sec) ? formatTime(sec) : '';
+  li.querySelector('.d').textContent = new Date(lastModified).toLocaleString();
+  return li;
+}
+
+// The list from the last visit, greyed out: it shows what was there without
+// suggesting it can be played.
+function renderHistory(last) {
+  $('list').className = 'history';
+  $('list').replaceChildren(...last.map(({ name, lastModified, sec }, i) =>
+    listRow(i + 1, name, sec, lastModified)));
+}
+
+function render() {
+  $('list').className = '';
+  const file = current && tracks.get(current);
+  $('title').textContent = file ? file.name : 'No track';
+  $('next').disabled = $('reshuffle').disabled = !tracks.size;
+
+  $('list').replaceChildren(...order.map((key, i) => {
+    const f = tracks.get(key);
+    const playing = i === pos && key === current;
+    const sec = durations.get(`${f.name}|${f.lastModified}`);
+    const li = listRow(playing ? '\u25b6' : i + 1, f.name, sec, f.lastModified);
+    li.className = playing ? 'now' : i < pos ? 'played' : '';
+    li.onclick = () => play(key);
+    return li;
+  }));
+}
+
+function updateMediaSession(key, file) {
+  if (!('mediaSession' in navigator)) return;
+  navigator.mediaSession.metadata = new MediaMetadata({ title: file.name });
+}
+
+$('pick').onclick = async () => {
+  try {
+    dir = await showDirectoryPicker({ id: 'bounces', mode: 'read', startIn: 'music' });
+    await saveDir(dir);
+    await rescan();
+    newRound();
+    play(order[0]);
+  } catch (e) {
+    if (e.name !== 'AbortError') setStatus(e.message, true);
+  }
+};
+
+// Resuming keeps the round as it is and folds in whatever changed meanwhile.
+$('resume').onclick = async () => {
+  if ((await dir.requestPermission({ mode: 'read' })) !== 'granted') return;
+  await rescan();
+  if (order.length) syncOrder();
+  else newRound();
+  if (current) render();
+  else advance();
+};
+
+$('next').onclick = () => advance();
+// Reshuffle moves a track that is sounding to the top, where it carries on,
+// and shuffles everything else behind it. With nothing sounding - a track
+// merely loaded or paused counts as nothing - it shuffles all and starts.
+$('reshuffle').onclick = async () => {
+  await rescan();
+  const sounding = current && !audio.paused;
+  newRound(sounding);
+  if (sounding) render();
+  else play(order[0]);
+};
+audio.addEventListener('ended', () => advance(true));
+
+if ('mediaSession' in navigator) {
+  navigator.mediaSession.setActionHandler('nexttrack', () => advance());
+}
+
+(async () => {
+  if (!('showDirectoryPicker' in window)) {
+    $('pick').disabled = true;
+    setStatus('This browser cannot open local folders. Use Chrome or Edge on a desktop.', true);
+    return;
+  }
+  const saved = await loadDir().catch(() => null);
+  if (!saved) {
+    setStatus('Choose the folder your exports go to.');
+    return;
+  }
+  dir = saved;
+  if (await canRead(saved)) {
+    await rescan();
+    newRound();
+    await play(order[0], false);
+    setStatus(`${$('status').textContent} - press play or Next to start.`);
+  } else {
+    setFolder(saved.name, true);
+    const last = await loadLast().catch(() => null);
+    if (last?.length) {
+      renderHistory(last);
+      setStatus(`Last seen ${last.length} tracks - press Resume access to play.`, true);
+    } else {
+      setStatus(`Press Resume access to reopen "${saved.name}".`, true);
+    }
+  }
+})();
+</script>
+</body>
+</html>
