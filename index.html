@@ -408,7 +408,7 @@ async function play(key, start = true) {
       return;
     }
     setStatus(`Skipped ${file.name}: ${e.message}`, true);
-    if (++failures < tracks.size) advance(true);
+    if (++failures < tracks.size) advance(true, start);
   }
 }
 
@@ -481,7 +481,8 @@ $('pick').onclick = async () => {
     await saveDir(dir);
     await rescan();
     newRound();
-    play(order[0]);
+    await play(order[0], false);
+    setStatus(`${$('status').textContent} - press play to start.`);
   } catch (e) {
     if (e.name !== 'AbortError') setStatus(e.message, true);
   }
@@ -494,7 +495,7 @@ $('resume').onclick = async () => {
   if (order.length) syncOrder();
   else newRound();
   if (current) render();
-  else advance();
+  else advance(false, false);
 };
 
 // Next keeps the player as it was: playing moves on playing, stopped stays
