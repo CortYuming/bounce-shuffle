@@ -65,8 +65,25 @@
   ol.history li:hover { background: none; }
   li .n { color: var(--muted); font-size: 12px; width: 2em; text-align: right; flex: none; }
   li .t { flex: 1; overflow-wrap: anywhere; }
-  li .d, li .len { color: var(--muted); font-size: 12px; flex: none; }
-  li .len { font-variant-numeric: tabular-nums; }
+  li .d, li .len { color: var(--muted); font-size: 12px; flex: none; text-align: right; }
+  li .len { font-variant-numeric: tabular-nums; min-width: 5em; }
+  li .d { min-width: 10em; }
+  /* Column headers over the list; each one sorts by its column. */
+  .head {
+    display: flex; gap: 12px; align-items: baseline; padding: 8px 10px;
+    border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; user-select: none;
+  }
+  .head[hidden] { display: none; }
+  .head span { cursor: pointer; }
+  .head span:hover { color: var(--fg); }
+  .head .n { width: 2em; text-align: right; flex: none; }
+  .head .t { flex: 1; }
+  .head .len, .head .d { flex: none; text-align: right; }
+  .head .len { min-width: 5em; }
+  .head .d { min-width: 10em; }
+  .head span.on { color: var(--accent); font-weight: 600; }
+  .head span.on::after { content: " \25B2"; font-size: 10px; }
+  .head span.on.desc::after { content: " \25BC"; }
 </style>
 </head>
 <body>
@@ -112,6 +129,12 @@
     </div>
   </section>
 
+  <div id="head" class="head" hidden>
+    <span class="n" data-sort="shuffle" title="Shuffled order">#</span>
+    <span class="t" data-sort="name">Name</span>
+    <span class="len" data-sort="len">Duration</span>
+    <span class="d" data-sort="date">Modified</span>
+  </div>
   <ol id="list"></ol>
 </main>
 
@@ -319,11 +342,15 @@ async function rescan() {
 
 // --- Queue ---
 
-// A round is one shuffled pass over the tracks. Its order is what the list
-// shows and it stays put while playing, so a place in it is easy to keep.
-let order = [];
+// A round is one pass over the tracks. The shuffled order is drawn once per
+// round and kept; the list shows either it or the same tracks sorted by a
+// column, and playback follows whichever is shown. The order stays put while
+// playing, so a place in it is easy to keep.
+let shuffled = [];
+let order = []; // what the list shows: shuffled, or sorted by a column
 let pos = -1; // index in order of the track playing; earlier ones are played
 let current = null;
+let ended = false; // the round finished by itself; every track counts as played
 let objectUrl = null;
 let failures = 0;
 let playSeq = 0; // a quicker Next press supersedes a track still being read
@@ -336,32 +363,85 @@ function shuffle(a) {
   return a;
 }
 
+// --- Sort ---
+// Which column the list is sorted by, if any; remembered between visits.
+// 'shuffle' shows the round's shuffled order as drawn.
+
+let sort = { key: 'shuffle', dir: 1 };
+try {
+  const saved = JSON.parse(localStorage.getItem('sort'));
+  if (['name', 'len', 'date'].includes(saved?.key) && [1, -1].includes(saved?.dir)) sort = saved;
+} catch {}
+
+function sortedKeys() {
+  const val = {
+    name: f => f.name,
+    len: f => durations.get(`${f.name}|${f.lastModified}`),
+    date: f => f.lastModified,
+  }[sort.key];
+  const cmp = (a, b) => typeof a === 'string' ? a.localeCompare(b, undefined, { numeric: true }) : a - b;
+  return [...tracks.keys()].sort((x, y) => {
+    const fx = tracks.get(x), fy = tracks.get(y);
+    const a = val(fx), b = val(fy);
+    // Tracks whose duration is unknown go last whichever way the column is sorted.
+    const na = !(a === a) || a == null, nb = !(b === b) || b == null;
+    if (na || nb) return na - nb;
+    return cmp(a, b) * sort.dir || fx.name.localeCompare(fy.name);
+  });
+}
+
+// Rebuild the shown order from the shuffled one and the sort, keeping the
+// place in the round: the current track stays current, a finished round stays
+// finished, and a fresh round starts from the top.
+function applyOrder() {
+  order = sort.key === 'shuffle' ? shuffled.slice() : sortedKeys();
+  pos = ended ? order.length : current && tracks.has(current) ? order.indexOf(current) : -1;
+}
+
+// Clicking a column sorts by it; clicking it again flips the direction.
+// # goes back to the shuffled order as it was.
+function setSort(key) {
+  if (key === 'shuffle') sort = { key, dir: 1 };
+  else if (sort.key === key) sort = { key, dir: -sort.dir };
+  else sort = { key, dir: key === 'date' ? -1 : 1 };
+  try { localStorage.setItem('sort', JSON.stringify(sort)); } catch {}
+  applyOrder();
+  render();
+}
+
 // keepCurrent puts the track playing first and shuffles the rest behind it.
 function newRound(keepCurrent = false) {
   const keys = shuffle([...tracks.keys()]);
+  ended = false;
   if (keepCurrent && current && tracks.has(current)) {
-    order = [current, ...keys.filter(k => k !== current)];
-    pos = 0;
+    shuffled = [current, ...keys.filter(k => k !== current)];
   } else {
-    order = keys;
+    shuffled = keys;
     // Avoid the same track twice in a row across rounds.
-    if (order.length > 1 && order[0] === current) order.push(order.shift());
-    pos = -1;
+    if (shuffled.length > 1 && shuffled[0] === current) shuffled.push(shuffled.shift());
+    current = null;
   }
+  applyOrder();
 }
 
 // Fold a rescan into the round: drop tracks that disappeared, slot new ones in
-// at random positions among the tracks not yet played.
+// at random positions among the tracks not yet played. If the current track
+// itself disappeared, the round carries on from the last one still there.
 function syncOrder() {
-  const played = order.slice(0, pos + 1).filter(k => tracks.has(k)).length;
-  const known = new Set(order);
-  order = order.filter(k => tracks.has(k));
-  pos = played - 1;
+  let anchor = null;
+  for (let i = Math.min(pos, order.length - 1); i >= 0; i--) {
+    if (tracks.has(order[i])) { anchor = order[i]; break; }
+  }
+  if (current && !tracks.has(current)) current = anchor;
+  const known = new Set(shuffled);
+  shuffled = shuffled.filter(k => tracks.has(k));
+  const from = anchor ? shuffled.indexOf(anchor) + 1 : 0;
   for (const k of tracks.keys()) {
     if (known.has(k)) continue;
-    const at = pos + 1 + Math.floor(Math.random() * (order.length - pos));
-    order.splice(at, 0, k);
+    const at = from + Math.floor(Math.random() * (shuffled.length - from + 1));
+    shuffled.splice(at, 0, k);
   }
+  applyOrder();
 }
 
 // atEnd is the track having finished by itself: the last one in the round
@@ -373,6 +453,7 @@ async function advance(atEnd = false, start = true) {
   if (pos + 1 >= order.length) {
     if (atEnd) {
       current = null;
+      ended = true;
       pos = order.length;
       render();
       setStatus(`Played all ${order.length} tracks. Press play for another round.`);
@@ -389,6 +470,7 @@ async function play(key, start = true) {
   if (!tracks.has(key)) return;
   pos = order.indexOf(key);
   current = key;
+  ended = false;
   const file = tracks.get(key);
   const seq = ++playSeq;
   render();
@@ -448,6 +530,7 @@ function listRow(n, name, sec, lastModified) {
 // The list from the last visit, greyed out: it shows what was there without
 // suggesting it can be played.
 function renderHistory(last) {
+  $('head').hidden = true;
   $('list').className = 'history';
   $('list').replaceChildren(...last.map(({ name, lastModified, sec }, i) =>
     listRow(i + 1, name, sec, lastModified)));
@@ -458,6 +541,11 @@ function render() {
   const file = current && tracks.get(current);
   $('title').textContent = file ? file.name : 'No track';
   $('play').disabled = $('next').disabled = $('reshuffle').disabled = !tracks.size;
+  $('head').hidden = !tracks.size;
+  for (const el of $('head').children) {
+    el.classList.toggle('on', el.dataset.sort === sort.key && sort.key !== 'shuffle');
+    el.classList.toggle('desc', sort.dir < 0);
+  }
 
   $('list').replaceChildren(...order.map((key, i) => {
     const f = tracks.get(key);
@@ -502,17 +590,21 @@ $('resume').onclick = async () => {
 // stopped with the next track loaded.
 const skip = () => advance(false, !audio.paused);
 $('next').onclick = skip;
-// Reshuffle moves a track that is sounding to the top, where it carries on,
-// and shuffles everything else behind it. With nothing sounding - a track
-// merely loaded or paused counts as nothing - it shuffles all and loads the
-// first one without starting it.
+// Reshuffle draws a new shuffled order and shows it, leaving any column sort.
+// It moves a track that is sounding to the top, where it carries on, and
+// shuffles everything else behind it. With nothing sounding - a track merely
+// loaded or paused counts as nothing - it shuffles all and loads the first one
+// without starting it.
 $('reshuffle').onclick = async () => {
   await rescan();
   const sounding = current && !audio.paused;
+  sort = { key: 'shuffle', dir: 1 };
+  try { localStorage.setItem('sort', JSON.stringify(sort)); } catch {}
   newRound(sounding);
   if (sounding) render();
   else play(order[0], false);
 };
+for (const el of $('head').children) el.onclick = () => setSort(el.dataset.sort);
 audio.addEventListener('ended', () => advance(true));
 
 // --- Player controls ---
