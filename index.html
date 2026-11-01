@@ -84,6 +84,20 @@
   .head span.on { color: var(--accent); font-weight: 600; }
   .head span.on::after { content: " \25B2"; font-size: 10px; }
   .head span.on.desc::after { content: " \25BC"; }
+  /* Filter by modified date. Chips toggle: pressing the selected one again clears it. */
+  .filter { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 8px; }
+  .filter[hidden] { display: none; }
+  .filter .lbl { color: var(--muted); font-size: 12px; margin-right: 4px; }
+  .chip {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 3px 12px; border-radius: 999px; font-size: 13px;
+  }
+  .chip[aria-pressed="true"] { background: var(--now); border-color: var(--accent); color: var(--accent); font-weight: 600; }
+  .chip .x { display: none; font-size: 14px; line-height: 1; }
+  .chip[aria-pressed="true"] .x { display: inline; }
+  .filter .count { margin-left: auto; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+  li.empty { justify-content: center; color: var(--muted); font-size: 13px; padding: 20px 10px; cursor: default; }
+  li.empty:hover { background: none; }
 </style>
 </head>
 <body>
@@ -129,6 +143,13 @@
     </div>
   </section>
 
+  <div id="filter" class="filter" role="group" aria-label="Modified within" hidden>
+    <span class="lbl">Modified within</span>
+    <button class="chip" data-days="1" aria-pressed="false">Today<span class="x" aria-hidden="true">&times;</span></button>
+    <button class="chip" data-days="3" aria-pressed="false">3 days<span class="x" aria-hidden="true">&times;</span></button>
+    <button class="chip" data-days="7" aria-pressed="false">7 days<span class="x" aria-hidden="true">&times;</span></button>
+    <span id="count" class="count"></span>
+  </div>
   <div id="head" class="head" hidden>
     <span class="n" data-sort="shuffle" title="Shuffled order">#</span>
     <span class="t" data-sort="name">Name</span>
@@ -301,7 +322,27 @@ function formatTime(sec) {
 // --- Folder scan ---
 
 let dir = null;
-let tracks = new Map(); // key -> File (newest export)
+let allTracks = new Map(); // key -> File (newest export)
+let tracks = allTracks; // allTracks narrowed by the date filter; the round plays these
+
+// --- Date filter ---
+// Keeps tracks whose newest export was modified within the last N days,
+// counting today as the first: 3 is today, yesterday and the day before,
+// each from midnight. 0 means no filter. Not remembered between visits.
+let within = 0;
+
+function sinceMidnight(days) {
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  d.setDate(d.getDate() - (days - 1));
+  return d.getTime();
+}
+
+function applyFilter() {
+  if (!within) { tracks = allTracks; return; }
+  const since = sinceMidnight(within);
+  tracks = new Map([...allTracks].filter(([, f]) => f.lastModified >= since));
+}
 
 async function canRead(handle) {
   return (await handle.queryPermission({ mode: 'read' })) === 'granted';
@@ -318,7 +359,9 @@ async function scan() {
     const cur = next.get(key);
     if (!cur || file.lastModified > cur.lastModified) next.set(key, file);
   }
-  tracks = next;
+  allTracks = next;
+  // Re-applied on every scan, so the window moves on past midnight.
+  applyFilter();
 }
 
 // Rescanning never prompts: if access has lapsed the current list keeps
@@ -329,11 +372,14 @@ async function rescan() {
     if (!(await canRead(dir))) throw new Error('lapsed');
     await scan();
     setFolder(dir.name);
-    const secs = await Promise.all([...tracks.values()].map(durationOf));
-    const last = [...tracks.values()].map((f, i) => ({ name: f.name, lastModified: f.lastModified, sec: secs[i] }));
+    const secs = await Promise.all([...allTracks.values()].map(durationOf));
+    const last = [...allTracks.values()].map((f, i) => ({ name: f.name, lastModified: f.lastModified, sec: secs[i] }));
     saveLast(last).catch(() => {});
-    const total = formatTime(secs.filter(Number.isFinite).reduce((a, b) => a + b, 0));
-    setStatus(`${tracks.size} tracks (${total}) in "${dir.name}" - checked ${new Date().toLocaleTimeString()}`);
+    const total = formatTime([...tracks.values()]
+      .map(f => durations.get(`${f.name}|${f.lastModified}`))
+      .filter(Number.isFinite).reduce((a, b) => a + b, 0));
+    const n = within ? `${tracks.size} of ${allTracks.size}` : tracks.size;
+    setStatus(`${n} tracks (${total}) in "${dir.name}" - checked ${new Date().toLocaleTimeString()}`);
   } catch {
     setFolder(dir.name, true);
     setStatus('Folder access paused - playing the last known list. Press Resume access to pick up new exports.', true);
@@ -531,6 +577,7 @@ function listRow(n, name, sec, lastModified) {
 // suggesting it can be played.
 function renderHistory(last) {
   $('head').hidden = true;
+  $('filter').hidden = true;
   $('list').className = 'history';
   $('list').replaceChildren(...last.map(({ name, lastModified, sec }, i) =>
     listRow(i + 1, name, sec, lastModified)));
@@ -545,6 +592,19 @@ function render() {
   for (const el of $('head').children) {
     el.classList.toggle('on', el.dataset.sort === sort.key && sort.key !== 'shuffle');
     el.classList.toggle('desc', sort.dir < 0);
+  }
+  $('filter').hidden = !allTracks.size;
+  for (const el of $('filter').querySelectorAll('.chip')) {
+    el.setAttribute('aria-pressed', +el.dataset.days === within);
+  }
+  $('count').textContent = within ? `${tracks.size} of ${allTracks.size} tracks` : '';
+
+  if (allTracks.size && !tracks.size) {
+    const li = document.createElement('li');
+    li.className = 'empty';
+    li.textContent = within === 1 ? 'No tracks modified today.' : `No tracks modified in the last ${within} days.`;
+    $('list').replaceChildren(li);
+    return;
   }
 
   $('list').replaceChildren(...order.map((key, i) => {
@@ -605,6 +665,30 @@ $('reshuffle').onclick = async () => {
   else play(order[0], false);
 };
 for (const el of $('head').children) el.onclick = () => setSort(el.dataset.sort);
+// A filter chip starts a new round over the tracks it keeps; pressing the
+// selected chip again clears the filter. A sounding track that is still in
+// range moves to the top and carries on; one that dropped out gives way to
+// the first track of the new round, which plays on if something was playing.
+for (const el of $('filter').querySelectorAll('.chip')) {
+  el.onclick = async () => {
+    const days = +el.dataset.days;
+    within = within === days ? 0 : days;
+    await rescan();
+    applyFilter(); // also when access has lapsed and rescan kept the old list
+    const sounding = current && !audio.paused;
+    if (!tracks.size) {
+      audio.pause();
+      current = null;
+      newRound();
+      render();
+      return;
+    }
+    const keep = sounding && tracks.has(current);
+    newRound(keep);
+    if (keep) render();
+    else play(order[0], sounding);
+  };
+}
 audio.addEventListener('ended', () => advance(true));
 
 // --- Player controls ---

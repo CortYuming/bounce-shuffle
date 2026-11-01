@@ -17,6 +17,7 @@ A desktop Chromium browser (Chrome or Edge). The page reads a local folder throu
 - Only files directly inside the folder are read; subfolders are ignored, so an `old/` folder keeps outtakes out of the list
 - One round plays every track once in shuffled order and then stops. The list keeps that order, with played tracks dimmed and ▶ on the current one
 - The column headers above the list sort it: **Name**, **Duration** or **Modified**, and a second click flips the direction. Playback follows the order shown, so sorting by Modified plays the newest exports first. **#** goes back to the shuffled order as it was. The sort is remembered between visits
+- **Modified within** narrows the round to tracks whose latest export is from **Today**, the last **3 days** or the last **7 days**, counting today as the first day and each day from midnight. Press the selected one again to clear it. A track still in range keeps playing; otherwise the first of the new round takes over. Every visit starts with no filter
 - The folder is read again before each track, so a new export joins the round at a random point among the tracks not yet played
 - Nothing is uploaded. Files are read and played in the browser
 
