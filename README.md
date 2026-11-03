@@ -29,10 +29,11 @@ Supported formats: AIFF, WAV, MP3, M4A/AAC, FLAC, Ogg, Opus. Chrome does not pla
 |---------|-----|--------|
 | Play / pause | `Space` | Pauses or resumes. After a finished round, starts a new one |
 | Next | `N` | Moves to the next track. Playing carries on playing; stopped stays stopped with the next track loaded |
-| Reshuffle | `R` | Shuffles a new order and shows it, leaving any column sort. A playing track moves to the top and keeps playing; otherwise the first track of the new order is loaded |
+| Reshuffle | `S` | Shuffles a new order and shows it, leaving any column sort. A playing track moves to the top and keeps playing; otherwise the first track of the new order is loaded |
 | Column headers | | Sort the list by Name, Duration or Modified; click again to flip. `#` returns to the shuffled order |
-| Seek bar | | Jump within the track |
-| Speaker / slider | | Mute and volume. The volume is remembered |
+| Seek bar | `Shift+→` / `Shift+←` | Jump within the track. The keys move 10 seconds forward or back |
+| Speaker / slider | `=` / `-` | Mute and volume. The keys raise or lower the volume by 5%. The volume is remembered |
+| Modified within | `1` / `3` / `7` | Same as pressing Today, 3 days or 7 days. Press the selected one again to clear it |
 
 Clicking a track in the list plays it.
 
