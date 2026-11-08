@@ -95,6 +95,21 @@
   .chip[aria-pressed="true"] { background: var(--now); border-color: var(--accent); color: var(--accent); font-weight: 600; }
   .chip .x { display: none; font-size: 14px; line-height: 1; }
   .chip[aria-pressed="true"] .x { display: inline; }
+  /* Filter by name: a search field styled like a chip, filled while it narrows the list. */
+  .search { position: relative; display: inline-flex; align-items: center; margin-left: 10px; }
+  .search input {
+    font: inherit; font-size: 13px; width: 13em; padding: 3px 26px 3px 30px; border-radius: 999px;
+    border: 1px solid var(--line); background: var(--card); color: var(--fg);
+  }
+  .search input:focus { outline: none; border-color: var(--accent); }
+  .search input.on { background: var(--now); border-color: var(--accent); color: var(--accent); font-weight: 600; }
+  .search input::placeholder { color: var(--muted); font-weight: 400; }
+  .search input::-webkit-search-cancel-button { display: none; }
+  .search .ico { position: absolute; left: 10px; color: var(--muted); pointer-events: none; }
+  .search:has(input:focus) .ico, .search:has(input.on) .ico { color: var(--accent); }
+  .search .clr { position: absolute; right: 4px; padding: 0 6px; border: 0; background: none; color: var(--accent); font-size: 14px; line-height: 1; }
+  .search .clr[hidden] { display: none; }
+  @media (max-width: 520px) { .search { margin-left: 0; } }
   .filter .count { margin-left: auto; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
   li.empty { justify-content: center; color: var(--muted); font-size: 13px; padding: 20px 10px; cursor: default; }
   li.empty:hover { background: none; }
@@ -143,11 +158,17 @@
     </div>
   </section>
 
-  <div id="filter" class="filter" role="group" aria-label="Modified within" hidden>
+  <div id="filter" class="filter" role="group" aria-label="Filter" hidden>
     <span class="lbl">Modified within</span>
     <button class="chip" data-days="1" aria-pressed="false">Today<span class="x" aria-hidden="true">&times;</span></button>
     <button class="chip" data-days="3" aria-pressed="false">3 days<span class="x" aria-hidden="true">&times;</span></button>
     <button class="chip" data-days="7" aria-pressed="false">7 days<span class="x" aria-hidden="true">&times;</span></button>
+    <span class="search">
+      <!-- search from Lucide (ISC) -->
+      <svg class="ico" viewBox="0 0 24 24" width="15" height="15" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+      <input id="query" type="search" placeholder="Filter by name" aria-label="Filter by name" title="Filter by name (/)" autocomplete="off" spellcheck="false">
+      <button id="clear-query" class="clr" aria-label="Clear name filter" hidden>&times;</button>
+    </span>
     <span id="count" class="count"></span>
   </div>
   <div id="head" class="head" hidden>
@@ -330,6 +351,10 @@ let tracks = allTracks; // allTracks narrowed by the date filter; the round play
 // counting today as the first: 3 is today, yesterday and the day before,
 // each from midnight. 0 means no filter. Not remembered between visits.
 let within = 0;
+// Keeps tracks whose file name contains this text, ignoring case. Empty means
+// no filter. Combined with the date filter; not remembered between visits.
+let query = '';
+const filtered = () => !!(within || query);
 
 function sinceMidnight(days) {
   const d = new Date();
@@ -339,9 +364,11 @@ function sinceMidnight(days) {
 }
 
 function applyFilter() {
-  if (!within) { tracks = allTracks; return; }
-  const since = sinceMidnight(within);
-  tracks = new Map([...allTracks].filter(([, f]) => f.lastModified >= since));
+  if (!filtered()) { tracks = allTracks; return; }
+  const since = within ? sinceMidnight(within) : -Infinity;
+  const q = query.toLowerCase();
+  tracks = new Map([...allTracks].filter(([, f]) =>
+    f.lastModified >= since && f.name.toLowerCase().includes(q)));
 }
 
 async function canRead(handle) {
@@ -378,7 +405,7 @@ async function rescan() {
     const total = formatTime([...tracks.values()]
       .map(f => durations.get(`${f.name}|${f.lastModified}`))
       .filter(Number.isFinite).reduce((a, b) => a + b, 0));
-    const n = within ? `${tracks.size} of ${allTracks.size}` : tracks.size;
+    const n = filtered() ? `${tracks.size} of ${allTracks.size}` : tracks.size;
     setStatus(`${n} tracks (${total}) in "${dir.name}" - checked ${new Date().toLocaleTimeString()}`);
   } catch {
     setFolder(dir.name, true);
@@ -597,12 +624,15 @@ function render() {
   for (const el of $('filter').querySelectorAll('.chip')) {
     el.setAttribute('aria-pressed', +el.dataset.days === within);
   }
-  $('count').textContent = within ? `${tracks.size} of ${allTracks.size} tracks` : '';
+  $('query').classList.toggle('on', !!query);
+  $('clear-query').hidden = !query;
+  $('count').textContent = filtered() ? `${tracks.size} of ${allTracks.size} tracks` : '';
 
   if (allTracks.size && !tracks.size) {
     const li = document.createElement('li');
     li.className = 'empty';
-    li.textContent = within === 1 ? 'No tracks modified today.' : `No tracks modified in the last ${within} days.`;
+    li.textContent = query ? `No tracks match "${query}"${within ? ' in this date range' : ''}.`
+      : within === 1 ? 'No tracks modified today.' : `No tracks modified in the last ${within} days.`;
     $('list').replaceChildren(li);
     return;
   }
@@ -665,28 +695,32 @@ $('reshuffle').onclick = async () => {
   else play(order[0], false);
 };
 for (const el of $('head').children) el.onclick = () => setSort(el.dataset.sort);
-// A filter chip starts a new round over the tracks it keeps; pressing the
-// selected chip again clears the filter. A sounding track that is still in
-// range moves to the top and carries on; one that dropped out gives way to
-// the first track of the new round, which plays on if something was playing.
+// Changing a filter starts a new round over the tracks it keeps. A sounding
+// track that is still in range moves to the top and carries on; one that
+// dropped out gives way to the first track of the new round, which plays on
+// if something was playing.
+async function refilter() {
+  await rescan();
+  applyFilter(); // also when access has lapsed and rescan kept the old list
+  const sounding = current && !audio.paused;
+  if (!tracks.size) {
+    audio.pause();
+    current = null;
+    newRound();
+    render();
+    return;
+  }
+  const keep = sounding && tracks.has(current);
+  newRound(keep);
+  if (keep) render();
+  else play(order[0], sounding);
+}
+// Pressing the selected chip again clears the date filter.
 for (const el of $('filter').querySelectorAll('.chip')) {
-  el.onclick = async () => {
+  el.onclick = () => {
     const days = +el.dataset.days;
     within = within === days ? 0 : days;
-    await rescan();
-    applyFilter(); // also when access has lapsed and rescan kept the old list
-    const sounding = current && !audio.paused;
-    if (!tracks.size) {
-      audio.pause();
-      current = null;
-      newRound();
-      render();
-      return;
-    }
-    const keep = sounding && tracks.has(current);
-    newRound(keep);
-    if (keep) render();
-    else play(order[0], sounding);
+    refilter();
   };
 }
 audio.addEventListener('ended', () => advance(true));
@@ -761,16 +795,52 @@ try {
 } catch {}
 showVolume();
 
+// The name filter follows the field as it is typed in, waiting for a pause so
+// that each keystroke does not start a round of its own.
+let queryTimer;
+function setQuery(text) {
+  clearTimeout(queryTimer);
+  const q = text.trim();
+  if (q === query) return;
+  query = q;
+  refilter();
+}
+$('query').addEventListener('input', () => {
+  clearTimeout(queryTimer);
+  queryTimer = setTimeout(() => setQuery($('query').value), 250);
+});
+$('clear-query').onclick = () => {
+  $('query').value = '';
+  setQuery('');
+  $('query').focus();
+};
+// / jumps to the field; Esc clears it and leaves it, so the keys below work again.
+document.addEventListener('keydown', e => {
+  if (e.key !== '/' || typing(e) || e.metaKey || e.ctrlKey || e.altKey) return;
+  if ($('filter').hidden) return;
+  e.preventDefault();
+  $('query').focus();
+});
+$('query').addEventListener('keydown', e => {
+  if (e.key !== 'Escape') return;
+  $('query').value = '';
+  setQuery('');
+  $('query').blur();
+});
+
+// While the name field has focus, keys type into it instead of acting.
+const typing = e => e.target === $('query');
+
 // Space always plays and pauses. A button keeps focus after a click and
 // would otherwise take Space as another press of itself (Chrome activates
 // buttons on keyup), so both halves of the key are claimed here.
 document.addEventListener('keydown', e => {
-  if (e.code !== 'Space') return;
+  if (e.code !== 'Space' || typing(e)) return;
   e.preventDefault();
   if (!e.repeat && !$('play').disabled) $('play').click();
 }, true);
 document.addEventListener('keyup', e => {
-  if (e.code === 'Space') e.preventDefault();
+  if (e.code === 'Space' && !typing(e)) e.preventDefault();
 }, true);
 
 // N for Next, S for Shuffle. Modified presses are left alone so that
@@ -778,7 +848,7 @@ document.addEventListener('keyup', e => {
 const letterKeys = { KeyN: 'next', KeyS: 'reshuffle' };
 document.addEventListener('keydown', e => {
   const id = letterKeys[e.code];
-  if (!id || e.repeat || e.metaKey || e.ctrlKey || e.altKey) return;
+  if (!id || typing(e) || e.repeat || e.metaKey || e.ctrlKey || e.altKey) return;
   e.preventDefault();
   if (!$(id).disabled) $(id).click();
 });
@@ -786,7 +856,7 @@ document.addEventListener('keydown', e => {
 // 1, 3 and 7 press the Today, 3 days and 7 days chips, so pressing the
 // selected one again clears the filter just as a click does.
 document.addEventListener('keydown', e => {
-  if (!['1', '3', '7'].includes(e.key) || e.repeat || e.metaKey || e.ctrlKey || e.altKey) return;
+  if (!['1', '3', '7'].includes(e.key) || typing(e) || e.repeat || e.metaKey || e.ctrlKey || e.altKey) return;
   e.preventDefault();
   if ($('filter').hidden) return;
   $('filter').querySelector(`.chip[data-days="${e.key}"]`).click();
@@ -796,7 +866,7 @@ document.addEventListener('keydown', e => {
 // Claimed in the capture phase so a focused slider does not move as well.
 document.addEventListener('keydown', e => {
   const dir = { ArrowRight: 1, ArrowLeft: -1 }[e.key];
-  if (!dir || !e.shiftKey || e.metaKey || e.ctrlKey || e.altKey) return;
+  if (!dir || typing(e) || !e.shiftKey || e.metaKey || e.ctrlKey || e.altKey) return;
   e.preventDefault();
   if ($('seek').disabled) return;
   audio.currentTime = Math.max(0, Math.min(audio.duration, audio.currentTime + dir * 10));
@@ -806,7 +876,7 @@ document.addEventListener('keydown', e => {
 // because = needs it on a JIS keyboard, and + (Shift+= on US) counts as =.
 document.addEventListener('keydown', e => {
   const dir = { '=': 1, '+': 1, '-': -1 }[e.key];
-  if (!dir || e.metaKey || e.ctrlKey || e.altKey) return;
+  if (!dir || typing(e) || e.metaKey || e.ctrlKey || e.altKey) return;
   e.preventDefault();
   const v = Math.round((audio.muted ? 0 : audio.volume) * 20 + dir) / 20;
   audio.volume = Math.max(0, Math.min(1, v));
