@@ -17,8 +17,9 @@ A desktop Chromium browser (Chrome or Edge). The page reads a local folder throu
 - Only files directly inside the folder are read; subfolders are ignored, so an `old/` folder keeps outtakes out of the list
 - One round plays every track once in shuffled order and then stops. The list keeps that order, with played tracks dimmed and ▶ on the current one
 - The column headers above the list sort it: **Name**, **Duration** or **Modified**, and a second click flips the direction. Playback follows the order shown, so sorting by Modified plays the newest exports first. **#** goes back to the shuffled order as it was. The sort is remembered between visits
-- **Modified within** narrows the round to tracks whose latest export is from **Today**, the last **3 days** or the last **7 days**, counting today as the first day and each day from midnight. Press the selected one again to clear it. A track still in range keeps playing; otherwise the first of the new round takes over. Every visit starts with no filter
-- **Filter by name** narrows the round to tracks whose file name contains the text typed, ignoring case. It combines with **Modified within**, and **×** clears it. Every visit starts with it empty
+- **Modified within** narrows the round to tracks whose latest export is from **Today**, the last **3 days** or the last **7 days**, counting today as the first day and each day from midnight. Press the selected one again to clear it. Changing a filter never stops the track playing: if the filter leaves it out, it stays dimmed at the top of the list with **Not in filter**, and the next track comes from the filtered round. Every visit starts with no filter
+- **Filter by name** narrows the round by file name, ignoring case. Words separated by spaces must all be in the name; an upper-case `OR` between words matches either side, so `bass OR pad` keeps tracks with bass or pad in the name. Matching words are highlighted. It combines with **Modified within**, and **×** clears it. Every visit starts with it empty
+- The clock button at the start of the filter row shows the tracks played instead of the round, newest first, with **Played** (when each one started) in the last column. Both filters apply to it, and clicking a track plays it again. The last 50 plays are remembered between visits
 - The folder is read again before each track, so a new export joins the round at a random point among the tracks not yet played
 - Nothing is uploaded. Files are read and played in the browser
 
@@ -35,6 +36,7 @@ Supported formats: AIFF, WAV, MP3, M4A/AAC, FLAC, Ogg, Opus. Chrome does not pla
 | Seek bar | `Shift+→` / `Shift+←` | Jump within the track. The keys move 10 seconds forward or back |
 | Speaker / slider | `=` / `-` | Mute and volume. The keys raise or lower the volume by 5%. The volume is remembered |
 | Modified within | `1` / `3` / `7` | Same as pressing Today, 3 days or 7 days. Press the selected one again to clear it |
+| History | `H` | Shows the tracks played in place of the list; press again to go back |
 | Filter by name | `/` / `Esc` | `/` moves to the field and `Esc` clears it and leaves. While the field has focus, the other keys type into it |
 
 Clicking a track in the list plays it.
@@ -45,4 +47,4 @@ Chrome's install button in the address bar adds it as an app with its own window
 
 ## Credits
 
-Icons: play, pause, skip next and volume from [Material Icons](https://github.com/google/material-design-icons) (Apache-2.0); shuffle from [Lucide](https://lucide.dev) (ISC).
+Icons: play, pause, skip next and volume from [Material Icons](https://github.com/google/material-design-icons) (Apache-2.0); shuffle, search and history from [Lucide](https://lucide.dev) (ISC).

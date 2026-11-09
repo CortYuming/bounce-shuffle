@@ -10,12 +10,12 @@
 <style>
   :root {
     --bg: #f6f5f2; --fg: #1d1d1b; --muted: #6b6a66; --line: #dddbd5;
-    --card: #ffffff; --accent: #2f6fdf; --now: #e8effc; --warn: #b4441c;
+    --card: #ffffff; --accent: #2f6fdf; --now: #e8effc; --warn: #b4441c; --mark: #fde9a8;
   }
   @media (prefers-color-scheme: dark) {
     :root {
       --bg: #161615; --fg: #ebeae6; --muted: #9a9993; --line: #33322f;
-      --card: #1f1f1d; --accent: #7aa5f5; --now: #22304a; --warn: #f08a62;
+      --card: #1f1f1d; --accent: #7aa5f5; --now: #22304a; --warn: #f08a62; --mark: #5a4a14;
     }
   }
   * { box-sizing: border-box; }
@@ -88,6 +88,10 @@
   .filter { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 8px; }
   .filter[hidden] { display: none; }
   .filter .lbl { color: var(--muted); font-size: 12px; margin-right: 4px; }
+  /* Switches the list to the tracks played, newest first. */
+  .filter .hist { display: inline-flex; align-items: center; padding: 3px 10px; border-radius: 999px; margin-right: 10px; }
+  .filter .hist[aria-pressed="true"] { background: var(--now); border-color: var(--accent); color: var(--accent); }
+  li.gone { opacity: .45; cursor: default; }
   .chip {
     display: inline-flex; align-items: center; gap: 4px;
     padding: 3px 12px; border-radius: 999px; font-size: 13px;
@@ -111,6 +115,13 @@
   .search .clr[hidden] { display: none; }
   @media (max-width: 520px) { .search { margin-left: 0; } }
   .filter .count { margin-left: auto; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+  /* The track playing after the filter left it out: kept on top, faded. */
+  li.outside { opacity: .5; cursor: default; border-bottom: 2px dashed var(--line); }
+  li.outside .tag {
+    font-size: 11px; font-weight: 400; color: var(--muted); border: 1px solid var(--line);
+    border-radius: 999px; padding: 0 8px; margin-left: 8px; white-space: nowrap;
+  }
+  li mark { background: var(--mark); color: inherit; border-radius: 3px; padding: 0 1px; }
   li.empty { justify-content: center; color: var(--muted); font-size: 13px; padding: 20px 10px; cursor: default; }
   li.empty:hover { background: none; }
 </style>
@@ -159,6 +170,10 @@
   </section>
 
   <div id="filter" class="filter" role="group" aria-label="Filter" hidden>
+    <!-- history from Lucide (ISC) -->
+    <button id="show-played" class="hist" aria-pressed="false" aria-label="History" title="History (H)">
+      <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/></svg>
+    </button>
     <span class="lbl">Modified within</span>
     <button class="chip" data-days="1" aria-pressed="false">Today<span class="x" aria-hidden="true">&times;</span></button>
     <button class="chip" data-days="3" aria-pressed="false">3 days<span class="x" aria-hidden="true">&times;</span></button>
@@ -166,7 +181,7 @@
     <span class="search">
       <!-- search from Lucide (ISC) -->
       <svg class="ico" viewBox="0 0 24 24" width="15" height="15" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
-      <input id="query" type="search" placeholder="Filter by name" aria-label="Filter by name" title="Filter by name (/)" autocomplete="off" spellcheck="false">
+      <input id="query" type="search" placeholder="Filter by name" aria-label="Filter by name" title="Filter by name (/) - spaces mean all words, OR between words means either" autocomplete="off" spellcheck="false">
       <button id="clear-query" class="clr" aria-label="Clear name filter" hidden>&times;</button>
     </span>
     <span id="count" class="count"></span>
@@ -351,10 +366,27 @@ let tracks = allTracks; // allTracks narrowed by the date filter; the round play
 // counting today as the first: 3 is today, yesterday and the day before,
 // each from midnight. 0 means no filter. Not remembered between visits.
 let within = 0;
-// Keeps tracks whose file name contains this text, ignoring case. Empty means
-// no filter. Combined with the date filter; not remembered between visits.
+// Keeps tracks whose file name matches this text, ignoring case: words split
+// by spaces must all be in the name, and an upper-case OR between words
+// offers another set of words, as in Google and X search. Empty means no
+// filter. Combined with the date filter; not remembered between visits.
 let query = '';
 const filtered = () => !!(within || query);
+
+// The query as sets of lower-case words; a name matches any one set in full.
+function queryGroups() {
+  const groups = [[]];
+  for (const w of query.split(/\s+/).filter(Boolean)) {
+    if (w === 'OR') groups.push([]);
+    else groups[groups.length - 1].push(w.toLowerCase());
+  }
+  return groups.filter(g => g.length);
+}
+
+function nameMatches(name, groups) {
+  const n = name.toLowerCase();
+  return !groups.length || groups.some(g => g.every(w => n.includes(w)));
+}
 
 function sinceMidnight(days) {
   const d = new Date();
@@ -366,9 +398,9 @@ function sinceMidnight(days) {
 function applyFilter() {
   if (!filtered()) { tracks = allTracks; return; }
   const since = within ? sinceMidnight(within) : -Infinity;
-  const q = query.toLowerCase();
+  const groups = queryGroups();
   tracks = new Map([...allTracks].filter(([, f]) =>
-    f.lastModified >= since && f.name.toLowerCase().includes(q)));
+    f.lastModified >= since && nameMatches(f.name, groups)));
 }
 
 async function canRead(handle) {
@@ -483,11 +515,13 @@ function setSort(key) {
 }
 
 // keepCurrent puts the track playing first and shuffles the rest behind it.
+// A track playing that the filter leaves out stays current outside the round,
+// and the round starts after it.
 function newRound(keepCurrent = false) {
   const keys = shuffle([...tracks.keys()]);
   ended = false;
-  if (keepCurrent && current && tracks.has(current)) {
-    shuffled = [current, ...keys.filter(k => k !== current)];
+  if (keepCurrent && current) {
+    shuffled = tracks.has(current) ? [current, ...keys.filter(k => k !== current)] : keys;
   } else {
     shuffled = keys;
     // Avoid the same track twice in a row across rounds.
@@ -499,13 +533,14 @@ function newRound(keepCurrent = false) {
 
 // Fold a rescan into the round: drop tracks that disappeared, slot new ones in
 // at random positions among the tracks not yet played. If the current track
-// itself disappeared, the round carries on from the last one still there.
+// itself disappeared from the folder, the round carries on from the last one
+// still there. One merely left out by the filter stays current.
 function syncOrder() {
   let anchor = null;
   for (let i = Math.min(pos, order.length - 1); i >= 0; i--) {
     if (tracks.has(order[i])) { anchor = order[i]; break; }
   }
-  if (current && !tracks.has(current)) current = anchor;
+  if (current && !allTracks.has(current)) current = anchor;
   const known = new Set(shuffled);
   shuffled = shuffled.filter(k => tracks.has(k));
   const from = anchor ? shuffled.indexOf(anchor) + 1 : 0;
@@ -540,11 +575,12 @@ async function advance(atEnd = false, start = true) {
 // start=false loads the track without playing it, so the player's own play
 // button works straight after a reload.
 async function play(key, start = true) {
-  if (!tracks.has(key)) return;
+  const file = allTracks.get(key);
+  if (!file) return;
   pos = order.indexOf(key);
   current = key;
+  logged = false;
   ended = false;
-  const file = tracks.get(key);
   const seq = ++playSeq;
   render();
   try {
@@ -590,11 +626,31 @@ function setFolder(name, paused = false) {
   $('resume').hidden = !paused;
 }
 
+// The name with the words of the name filter marked.
+function markedName(name) {
+  // Longer words first, so a shorter one does not take part of a longer one.
+  const words = [...new Set(queryGroups().flat())].sort((a, b) => b.length - a.length);
+  if (!words.length) return document.createTextNode(name);
+  const esc = words.map(w => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  const span = document.createElement('span');
+  for (const part of name.split(new RegExp(`(${esc.join('|')})`, 'i'))) {
+    if (!part) continue;
+    if (words.includes(part.toLowerCase())) {
+      const m = document.createElement('mark');
+      m.textContent = part;
+      span.append(m);
+    } else {
+      span.append(part);
+    }
+  }
+  return span;
+}
+
 function listRow(n, name, sec, lastModified) {
   const li = document.createElement('li');
   li.innerHTML = '<span class="n"></span><span class="t"></span><span class="len"></span><span class="d"></span>';
   li.querySelector('.n').textContent = n;
-  li.querySelector('.t').textContent = name;
+  li.querySelector('.t').append(markedName(name));
   li.querySelector('.len').textContent = Number.isFinite(sec) ? formatTime(sec) : '';
   li.querySelector('.d').textContent = new Date(lastModified).toLocaleString();
   return li;
@@ -610,16 +666,68 @@ function renderHistory(last) {
     listRow(i + 1, name, sec, lastModified)));
 }
 
+// --- Played ---
+// Every track that starts playing, newest first, kept between visits. The
+// clock button shows it in place of the list, with the same columns and the
+// same filters; the last column tells when each one started.
+const MAX_PLAYED = 50;
+let playLog = [];
+try {
+  const saved = JSON.parse(localStorage.getItem('played'));
+  if (Array.isArray(saved)) playLog = saved.filter(e => e && typeof e.key === 'string' && Number.isFinite(e.at));
+} catch {}
+let showPlayed = false; // not remembered between visits
+let logged = true; // whether the track loaded has been logged since it was loaded
+
+function logPlay(key) {
+  const f = allTracks.get(key);
+  if (!f) return;
+  playLog.unshift({ key, name: f.name, lastModified: f.lastModified, at: Date.now() });
+  playLog.length = Math.min(playLog.length, MAX_PLAYED);
+  try { localStorage.setItem('played', JSON.stringify(playLog)); } catch {}
+  if (showPlayed) render();
+}
+
+function renderPlayed() {
+  const since = within ? sinceMidnight(within) : -Infinity;
+  const groups = queryGroups();
+  const shown = playLog.filter(e => {
+    const f = allTracks.get(e.key);
+    return (f ? f.lastModified : e.lastModified) >= since && nameMatches(e.name, groups);
+  });
+  $('count').textContent = filtered() ? `${shown.length} of ${playLog.length} played` : `${playLog.length} played`;
+  if (!shown.length) {
+    const li = document.createElement('li');
+    li.className = 'empty';
+    li.textContent = playLog.length ? 'No played tracks match the filter.' : 'Nothing played yet.';
+    $('list').replaceChildren(li);
+    return;
+  }
+  $('list').replaceChildren(...shown.map((e, i) => {
+    const isNow = e === playLog[0] && e.key === current;
+    const li = listRow(isNow ? '\u25b6' : i + 1, e.name, durations.get(`${e.name}|${e.lastModified}`), e.at);
+    // A track no longer in the folder cannot be played again.
+    if (allTracks.has(e.key)) li.onclick = () => play(e.key);
+    li.className = isNow ? 'now' : allTracks.has(e.key) ? '' : 'gone';
+    return li;
+  }));
+}
+
 function render() {
   $('list').className = '';
-  const file = current && tracks.get(current);
+  const file = current && allTracks.get(current);
   $('title').textContent = file ? file.name : 'No track';
-  $('play').disabled = $('next').disabled = $('reshuffle').disabled = !tracks.size;
-  $('head').hidden = !tracks.size;
+  $('next').disabled = $('reshuffle').disabled = !tracks.size;
+  // A track left out by the filter can still be paused and resumed.
+  $('play').disabled = !tracks.size && !file;
+  $('show-played').setAttribute('aria-pressed', showPlayed);
+  $('head').hidden = showPlayed ? !playLog.length : !tracks.size;
   for (const el of $('head').children) {
-    el.classList.toggle('on', el.dataset.sort === sort.key && sort.key !== 'shuffle');
-    el.classList.toggle('desc', sort.dir < 0);
+    const on = showPlayed ? el.dataset.sort === 'date' : el.dataset.sort === sort.key && sort.key !== 'shuffle';
+    el.classList.toggle('on', on);
+    el.classList.toggle('desc', showPlayed || sort.dir < 0);
   }
+  $('head').querySelector('[data-sort="date"]').textContent = showPlayed ? 'Played' : 'Modified';
   $('filter').hidden = !allTracks.size;
   for (const el of $('filter').querySelectorAll('.chip')) {
     el.setAttribute('aria-pressed', +el.dataset.days === within);
@@ -627,17 +735,31 @@ function render() {
   $('query').classList.toggle('on', !!query);
   $('clear-query').hidden = !query;
   $('count').textContent = filtered() ? `${tracks.size} of ${allTracks.size} tracks` : '';
+  if (showPlayed) { renderPlayed(); return; }
+
+  // The track playing that the filter leaves out stays on top, faded, until
+  // the next track takes over.
+  const rows = [];
+  if (file && !tracks.has(current)) {
+    const li = listRow('▶', file.name, durations.get(`${file.name}|${file.lastModified}`), file.lastModified);
+    li.className = 'now outside';
+    const tag = document.createElement('span');
+    tag.className = 'tag';
+    tag.textContent = 'Not in filter';
+    li.querySelector('.t').append(tag);
+    rows.push(li);
+  }
 
   if (allTracks.size && !tracks.size) {
     const li = document.createElement('li');
     li.className = 'empty';
     li.textContent = query ? `No tracks match "${query}"${within ? ' in this date range' : ''}.`
       : within === 1 ? 'No tracks modified today.' : `No tracks modified in the last ${within} days.`;
-    $('list').replaceChildren(li);
+    $('list').replaceChildren(...rows, li);
     return;
   }
 
-  $('list').replaceChildren(...order.map((key, i) => {
+  $('list').replaceChildren(...rows, ...order.map((key, i) => {
     const f = tracks.get(key);
     const playing = i === pos && key === current;
     const sec = durations.get(`${f.name}|${f.lastModified}`);
@@ -694,26 +816,21 @@ $('reshuffle').onclick = async () => {
   if (sounding) render();
   else play(order[0], false);
 };
-for (const el of $('head').children) el.onclick = () => setSort(el.dataset.sort);
-// Changing a filter starts a new round over the tracks it keeps. A sounding
-// track that is still in range moves to the top and carries on; one that
-// dropped out gives way to the first track of the new round, which plays on
-// if something was playing.
+// The played list keeps its own order, newest first.
+for (const el of $('head').children) el.onclick = () => { if (!showPlayed) setSort(el.dataset.sort); };
+$('show-played').onclick = () => { showPlayed = !showPlayed; render(); };
+// Changing a filter starts a new round over the tracks it keeps, and never
+// touches the track playing: a started track, sounding or paused, carries on.
+// Still in range, it moves to the top; left out, it stays on top of the list,
+// faded, and the next track comes from the new round. With no track started,
+// the first of the new round is loaded without playing.
 async function refilter() {
   await rescan();
   applyFilter(); // also when access has lapsed and rescan kept the old list
-  const sounding = current && !audio.paused;
-  if (!tracks.size) {
-    audio.pause();
-    current = null;
-    newRound();
-    render();
-    return;
-  }
-  const keep = sounding && tracks.has(current);
+  const keep = !!current && (!audio.paused || audio.currentTime > 0);
   newRound(keep);
-  if (keep) render();
-  else play(order[0], sounding);
+  if (keep || !tracks.size) render();
+  else play(order[0], false);
 }
 // Pressing the selected chip again clears the date filter.
 for (const el of $('filter').querySelectorAll('.chip')) {
@@ -743,6 +860,12 @@ function showPlaying() {
   $('play').title = `${$('play').ariaLabel} (Space)`;
 }
 audio.addEventListener('play', showPlaying);
+// A track counts as played once it starts sounding, not when it is loaded.
+audio.addEventListener('play', () => {
+  if (logged || !current) return;
+  logged = true;
+  logPlay(current);
+});
 audio.addEventListener('pause', showPlaying);
 
 // While the seek bar is dragged it shows where it will land, not playback.
@@ -843,9 +966,9 @@ document.addEventListener('keyup', e => {
   if (e.code === 'Space' && !typing(e)) e.preventDefault();
 }, true);
 
-// N for Next, S for Shuffle. Modified presses are left alone so that
+// N for Next, S for Shuffle, H for History. Modified presses are left alone so that
 // browser shortcuts such as Cmd+S keep working.
-const letterKeys = { KeyN: 'next', KeyS: 'reshuffle' };
+const letterKeys = { KeyN: 'next', KeyS: 'reshuffle', KeyH: 'show-played' };
 document.addEventListener('keydown', e => {
   const id = letterKeys[e.code];
   if (!id || typing(e) || e.repeat || e.metaKey || e.ctrlKey || e.altKey) return;
