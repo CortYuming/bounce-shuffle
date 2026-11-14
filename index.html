@@ -140,7 +140,6 @@
   li:hover .mark, li .mark:focus-visible { opacity: 1; }
   li .mark:hover { color: var(--rel); border-color: var(--rel); background: var(--rel-tint); }
   li.marked .n, li.marked .nm, li.marked .len, li.marked .d { opacity: .45; }
-  ol.released li { cursor: default; }
   .filter .rel-toggle { margin: 0; gap: 5px; font-size: 13px; }
   .filter .rel-toggle[aria-pressed="true"] { background: var(--rel-tint); border-color: var(--rel); color: var(--rel); }
   #released-count { font-variant-numeric: tabular-nums; }
@@ -501,6 +500,10 @@ async function rescan() {
 let shuffled = [];
 let order = []; // what the list shows: shuffled, or sorted by a column
 let pos = -1; // index in order of the track playing; earlier ones are played
+// A track played from outside the round (the Released or History list) leaves
+// the round where it was: back is the round's track it left from, and pos
+// stays on it, so the round carries on after it once that track ends.
+let back = null;
 let current = null;
 let ended = false; // the round finished by itself; every track counts as played
 let objectUrl = null;
@@ -547,7 +550,10 @@ function sortedKeys() {
 // finished, and a fresh round starts from the top.
 function applyOrder() {
   order = sort.key === 'shuffle' ? shuffled.slice() : sortedKeys();
-  pos = ended ? order.length : current && tracks.has(current) ? order.indexOf(current) : -1;
+  pos = ended ? order.length
+    : current && tracks.has(current) ? order.indexOf(current)
+    : back && order.includes(back) ? order.indexOf(back)
+    : -1;
 }
 
 // Clicking a column sorts by it; clicking it again flips the direction.
@@ -569,6 +575,7 @@ function newRound(keepCurrent = false) {
   if (stay.size) { stay.clear(); applyFilter(); }
   const keys = shuffle([...tracks.keys()]);
   ended = false;
+  back = null;
   if (keepCurrent && current) {
     shuffled = tracks.has(current) ? [current, ...keys.filter(k => k !== current)] : keys;
   } else {
@@ -605,6 +612,7 @@ function syncOrder() {
 // then stops playback. Next past the last one starts a new round instead.
 // start=false loads the next track without playing it.
 async function advance(atEnd = false, start = true) {
+  if (showReleased && await advanceReleased(atEnd, start)) return;
   await rescan();
   syncOrder();
   // Tracks marked in this round are still listed but no longer played.
@@ -625,12 +633,37 @@ async function advance(atEnd = false, start = true) {
   await play(order[next], start);
 }
 
+// While the Released list is open it is the playlist: Next and the end of a
+// track move down it. Next past the last goes back to the top; the last one
+// ending loads the top without playing it. The round keeps its place for when
+// the list is closed. False when the list has nothing to play.
+async function advanceReleased(atEnd, start) {
+  await rescan();
+  const list = releasedKeys();
+  if (!list.length) return false;
+  const next = list.indexOf(current) + 1;
+  if (next < list.length) {
+    await play(list[next], start);
+  } else if (atEnd) {
+    await play(list[0], false);
+    setStatus(`Played all ${list.length} released tracks. Press play to start again.`);
+  } else {
+    await play(list[0], start);
+  }
+  return true;
+}
+
 // start=false loads the track without playing it, so the player's own play
 // button works straight after a reload.
 async function play(key, start = true) {
   const file = allTracks.get(key);
   if (!file) return;
-  pos = order.indexOf(key);
+  if (order.includes(key)) {
+    pos = order.indexOf(key);
+    back = null;
+  } else {
+    back = order[pos] ?? null; // pos stays where the round was
+  }
   current = key;
   logged = false;
   ended = false;
@@ -794,8 +827,12 @@ function toggleReleased(key) {
   if (released.has(key)) {
     released.delete(key);
     stay.delete(key);
-    // The track playing comes back as the first of the round, where it is.
-    if (key === current && !shuffled.includes(key)) shuffled.unshift(key);
+    // The track playing comes back into the round where it is: after the
+    // track it was played from, or first if it was not played from the round.
+    if (key === current && !shuffled.includes(key)) {
+      shuffled.splice(back ? shuffled.indexOf(back) + 1 : 0, 0, key);
+      back = null;
+    }
   } else {
     const f = allTracks.get(key);
     if (!f) return;
@@ -808,6 +845,10 @@ function toggleReleased(key) {
   render();
   rescan(); // brings the track count in the status line up to date
 }
+
+// The Released list's tracks still in the folder, newest mark first.
+const releasedKeys = () => [...released].sort((a, b) => b[1].at - a[1].at)
+  .map(([key]) => key).filter(key => allTracks.has(key));
 
 function renderReleased() {
   $('list').className = 'released';
@@ -825,7 +866,9 @@ function renderReleased() {
     const f = allTracks.get(key);
     const sec = f && durations.get(`${f.name}|${f.lastModified}`);
     const li = listRow(key === current ? '▶' : i + 1, f ? f.name : name, sec, at);
-    li.className = key === current ? 'now' : '';
+    // A track no longer in the folder cannot be played.
+    if (f) li.onclick = () => play(key);
+    li.className = key === current ? 'now' : f ? '' : 'gone';
     li.querySelector('.act').append(markButton(key));
     return li;
   }));
@@ -836,9 +879,11 @@ function render() {
   const file = current && allTracks.get(current);
   const n = playable().length;
   $('title').textContent = file ? file.name : 'No track';
-  $('next').disabled = $('reshuffle').disabled = !n;
+  const rel = showReleased && releasedKeys().length;
+  $('next').disabled = !n && !rel;
+  $('reshuffle').disabled = !n;
   // A track left out by the filter can still be paused and resumed.
-  $('play').disabled = !n && !file;
+  $('play').disabled = !n && !file && !rel;
   $('show-played').setAttribute('aria-pressed', showPlayed);
   $('show-released').setAttribute('aria-pressed', showReleased);
   $('released-count').textContent = released.size;
@@ -891,7 +936,9 @@ function render() {
     if (!marked) num++;
     const sec = durations.get(`${f.name}|${f.lastModified}`);
     const li = listRow(playing ? '\u25b6' : marked ? '' : num, f.name, sec, f.lastModified);
-    li.className = [playing ? 'now' : i < pos ? 'played' : '', marked ? 'marked' : ''].join(' ').trim();
+    // The round's track left for one played from outside counts as played.
+    const done = i < pos || (i === pos && !playing);
+    li.className = [playing ? 'now' : done ? 'played' : '', marked ? 'marked' : ''].join(' ').trim();
     if (marked) li.querySelector('.t').append(tagEl('Released', 'rel'));
     li.querySelector('.act').append(markButton(key));
     li.onclick = () => play(key);
@@ -978,8 +1025,12 @@ audio.addEventListener('ended', () => advance(true));
 // --- Player controls ---
 // The <audio> element has no controls of its own; these sit on one row.
 
+// In the Released list, play starts at its top unless a track of it is
+// loaded. A track sounding from elsewhere is paused first, as anywhere else.
 $('play').onclick = () => {
-  if (!current) advance();
+  const list = showReleased ? releasedKeys() : [];
+  if (audio.paused && list.length && !list.includes(current)) play(list[0]);
+  else if (!current) advance();
   else if (audio.paused) audio.play();
   else audio.pause();
 };
