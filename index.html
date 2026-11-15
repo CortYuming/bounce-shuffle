@@ -846,13 +846,69 @@ function toggleReleased(key) {
   rescan(); // brings the track count in the status line up to date
 }
 
-// The Released list's tracks still in the folder, newest mark first.
-const releasedKeys = () => [...released].sort((a, b) => b[1].at - a[1].at)
-  .map(([key]) => key).filter(key => allTracks.has(key));
+// The Released list has an order of its own, set by its column headers and
+// Reshuffle while it is open; the round's order is left alone. Each opening
+// starts from the newest mark first.
+let relSort = { key: 'date', dir: -1 };
+let relShuffled = []; // keys in the order last drawn for the Released list
+
+// The Released list's entries, [key, { name, at }], in the order shown.
+// Marks made after the last draw go in at random places.
+function releasedOrder() {
+  const list = [...released];
+  if (relSort.key === 'shuffle') {
+    relShuffled = relShuffled.filter(k => released.has(k));
+    const known = new Set(relShuffled);
+    for (const [k] of list) {
+      if (!known.has(k)) relShuffled.splice(Math.floor(Math.random() * (relShuffled.length + 1)), 0, k);
+    }
+    return relShuffled.map(k => [k, released.get(k)]);
+  }
+  const val = {
+    name: ([k, e]) => allTracks.get(k)?.name ?? e.name,
+    len: ([k]) => {
+      const f = allTracks.get(k);
+      return f && durations.get(`${f.name}|${f.lastModified}`);
+    },
+    date: ([, e]) => e.at,
+  }[relSort.key];
+  const cmp = (a, b) => typeof a === 'string' ? a.localeCompare(b, undefined, { numeric: true }) : a - b;
+  return list.sort((x, y) => {
+    const a = val(x), b = val(y);
+    // Tracks whose duration is unknown go last whichever way the column is sorted.
+    const na = !(a === a) || a == null, nb = !(b === b) || b == null;
+    if (na || nb) return na - nb;
+    return cmp(a, b) * relSort.dir || x[1].name.localeCompare(y[1].name);
+  });
+}
+
+// Same clicks as the round's columns: again flips the direction, # goes back
+// to the order last drawn.
+function setReleasedSort(key) {
+  if (key === 'shuffle') {
+    if (!relShuffled.length) relShuffled = shuffle([...released.keys()]);
+    relSort = { key, dir: 1 };
+  } else if (relSort.key === key) relSort = { key, dir: -relSort.dir };
+  else relSort = { key, dir: key === 'date' ? -1 : 1 };
+  render();
+}
+
+// Reshuffle in the Released list draws a new order for it. A track of it that
+// is sounding moves to the top, where it carries on.
+function reshuffleReleased() {
+  const keys = shuffle([...released.keys()]);
+  const sounding = current && !audio.paused && released.has(current);
+  relShuffled = sounding ? [current, ...keys.filter(k => k !== current)] : keys;
+  relSort = { key: 'shuffle', dir: 1 };
+  render();
+}
+
+// The Released list's tracks still in the folder, in the order shown.
+const releasedKeys = () => releasedOrder().map(([key]) => key).filter(key => allTracks.has(key));
 
 function renderReleased() {
   $('list').className = 'released';
-  const list = [...released].sort((a, b) => b[1].at - a[1].at);
+  const list = releasedOrder();
   $('count').textContent = `${list.length} released`;
   if (!list.length) {
     const li = document.createElement('li');
@@ -881,18 +937,19 @@ function render() {
   $('title').textContent = file ? file.name : 'No track';
   const rel = showReleased && releasedKeys().length;
   $('next').disabled = !n && !rel;
-  $('reshuffle').disabled = !n;
+  $('reshuffle').disabled = showReleased ? !released.size : !n;
   // A track left out by the filter can still be paused and resumed.
   $('play').disabled = !n && !file && !rel;
   $('show-played').setAttribute('aria-pressed', showPlayed);
   $('show-released').setAttribute('aria-pressed', showReleased);
   $('released-count').textContent = released.size;
-  const side = showPlayed || showReleased; // a list with its own order, newest first
   $('head').hidden = showPlayed ? !playLog.length : showReleased ? !released.size : !tracks.size;
+  // The played list keeps its own order, newest first.
+  const s = showReleased ? relSort : sort;
   for (const el of $('head').children) {
-    const on = side ? el.dataset.sort === 'date' : el.dataset.sort === sort.key && sort.key !== 'shuffle';
+    const on = showPlayed ? el.dataset.sort === 'date' : el.dataset.sort === s.key && s.key !== 'shuffle';
     el.classList.toggle('on', on);
-    el.classList.toggle('desc', side || sort.dir < 0);
+    el.classList.toggle('desc', showPlayed || s.dir < 0);
   }
   $('head').querySelector('[data-sort="date"]').textContent = showPlayed ? 'Played' : showReleased ? 'Released' : 'Modified';
   $('filter').hidden = !allTracks.size;
@@ -985,6 +1042,7 @@ $('next').onclick = skip;
 // without starting it.
 $('reshuffle').onclick = async () => {
   await rescan();
+  if (showReleased) { reshuffleReleased(); return; }
   const sounding = current && !audio.paused;
   sort = { key: 'shuffle', dir: 1 };
   try { localStorage.setItem('sort', JSON.stringify(sort)); } catch {}
@@ -994,11 +1052,20 @@ $('reshuffle').onclick = async () => {
 };
 // The played list keeps its own order, newest first.
 for (const el of $('head').children) {
-  el.onclick = () => { if (!showPlayed && !showReleased && el.dataset.sort) setSort(el.dataset.sort); };
+  el.onclick = () => {
+    if (showPlayed || !el.dataset.sort) return;
+    if (showReleased) setReleasedSort(el.dataset.sort);
+    else setSort(el.dataset.sort);
+  };
 }
 // History and Released each take the list's place; opening one closes the other.
 $('show-played').onclick = () => { showPlayed = !showPlayed; showReleased = false; render(); };
-$('show-released').onclick = () => { showReleased = !showReleased; showPlayed = false; render(); };
+$('show-released').onclick = () => {
+  showReleased = !showReleased;
+  showPlayed = false;
+  if (showReleased) { relSort = { key: 'date', dir: -1 }; relShuffled = []; }
+  render();
+};
 // Changing a filter starts a new round over the tracks it keeps, and never
 // touches the track playing: a started track, sounding or paused, carries on.
 // Still in range, it moves to the top; left out, it stays on top of the list,
