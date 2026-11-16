@@ -468,6 +468,26 @@ async function scan() {
   applyFilter();
 }
 
+let checkedAt = null; // time of the last scan that could read the folder
+
+// The status line counts the list on show: the Released list while it is
+// open, otherwise the tracks the shuffle plays.
+function showCount() {
+  if (!dir || !checkedAt) return;
+  let n, files;
+  if (showReleased) {
+    n = `${released.size} released`;
+    files = releasedKeys().map(k => allTracks.get(k));
+  } else {
+    const keys = playable();
+    n = keys.length < allTracks.size ? `${keys.length} of ${allTracks.size}` : keys.length;
+    files = keys.map(k => tracks.get(k));
+  }
+  const total = formatTime(files.map(f => durations.get(`${f.name}|${f.lastModified}`))
+    .filter(Number.isFinite).reduce((a, b) => a + b, 0));
+  setStatus(`${n} tracks (${total}) in "${dir.name}" - checked ${checkedAt}`);
+}
+
 // Rescanning never prompts: if access has lapsed the current list keeps
 // playing, and the Resume button offers to restore it.
 async function rescan() {
@@ -479,13 +499,10 @@ async function rescan() {
     const secs = await Promise.all([...allTracks.values()].map(durationOf));
     const last = [...allTracks.values()].map((f, i) => ({ name: f.name, lastModified: f.lastModified, sec: secs[i] }));
     saveLast(last).catch(() => {});
-    const keys = playable();
-    const total = formatTime(keys.map(k => tracks.get(k))
-      .map(f => durations.get(`${f.name}|${f.lastModified}`))
-      .filter(Number.isFinite).reduce((a, b) => a + b, 0));
-    const n = keys.length < allTracks.size ? `${keys.length} of ${allTracks.size}` : keys.length;
-    setStatus(`${n} tracks (${total}) in "${dir.name}" - checked ${new Date().toLocaleTimeString()}`);
+    checkedAt = new Date().toLocaleTimeString();
+    showCount();
   } catch {
+    checkedAt = null;
     setFolder(dir.name, true);
     setStatus('Folder access paused - playing the last known list. Press Resume access to pick up new exports.', true);
   }
@@ -1059,12 +1076,13 @@ for (const el of $('head').children) {
   };
 }
 // History and Released each take the list's place; opening one closes the other.
-$('show-played').onclick = () => { showPlayed = !showPlayed; showReleased = false; render(); };
+$('show-played').onclick = () => { showPlayed = !showPlayed; showReleased = false; render(); showCount(); };
 $('show-released').onclick = () => {
   showReleased = !showReleased;
   showPlayed = false;
   if (showReleased) { relSort = { key: 'date', dir: -1 }; relShuffled = []; }
   render();
+  showCount();
 };
 // Changing a filter starts a new round over the tracks it keeps, and never
 // touches the track playing: a started track, sounding or paused, carries on.
