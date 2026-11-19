@@ -146,6 +146,10 @@
   li mark { background: var(--mark); color: inherit; border-radius: 3px; padding: 0 1px; }
   li.empty { justify-content: center; color: var(--muted); font-size: 13px; padding: 20px 10px; cursor: default; }
   li.empty:hover { background: none; }
+  /* Matches left out of the list by their Released mark; opens the Released list. */
+  li.more { justify-content: center; align-items: center; gap: 6px; color: var(--rel); font-size: 13px; padding: 10px; }
+  li.more:hover { background: var(--rel-tint); }
+  li.more svg { flex: none; }
 </style>
 </head>
 <body>
@@ -441,6 +445,22 @@ function sinceMidnight(days) {
   return d.getTime();
 }
 
+// Whether the filters keep a Released entry: judged by its newest export
+// while that is in the folder, otherwise by the name it was marked under. A
+// track gone from the folder has no modification time, so a date filter
+// leaves it out.
+function releasedKept([key, e]) {
+  const f = allTracks.get(key);
+  const groups = queryGroups();
+  if (!f) return !within && nameMatches(e.name, groups);
+  return f.lastModified >= (within ? sinceMidnight(within) : -Infinity) && nameMatches(f.name, groups);
+}
+
+// How many tracks the filters keep but the Released mark leaves out of the
+// list. Without a filter the marked tracks are simply the Released list.
+const hiddenMatches = () => filtered()
+  ? [...released].filter(e => !tracks.has(e[0]) && releasedKept(e)).length : 0;
+
 function applyFilter() {
   const since = within ? sinceMidnight(within) : -Infinity;
   const groups = queryGroups();
@@ -476,7 +496,7 @@ function showCount() {
   if (!dir || !checkedAt) return;
   let n, files;
   if (showReleased) {
-    n = `${released.size} released`;
+    n = filtered() ? `${releasedOrder().length} of ${released.size} released` : `${released.size} released`;
     files = releasedKeys().map(k => allTracks.get(k));
   } else {
     const keys = playable();
@@ -869,8 +889,9 @@ function toggleReleased(key) {
 let relSort = { key: 'date', dir: -1 };
 let relShuffled = []; // keys in the order last drawn for the Released list
 
-// The Released list's entries, [key, { name, at }], in the order shown.
-// Marks made after the last draw go in at random places.
+// The Released list's entries, [key, { name, at }], in the order shown: those
+// the filters keep, as in the round and the played list. Marks made after the
+// last draw go in at random places.
 function releasedOrder() {
   const list = [...released];
   if (relSort.key === 'shuffle') {
@@ -879,7 +900,7 @@ function releasedOrder() {
     for (const [k] of list) {
       if (!known.has(k)) relShuffled.splice(Math.floor(Math.random() * (relShuffled.length + 1)), 0, k);
     }
-    return relShuffled.map(k => [k, released.get(k)]);
+    return relShuffled.map(k => [k, released.get(k)]).filter(releasedKept);
   }
   const val = {
     name: ([k, e]) => allTracks.get(k)?.name ?? e.name,
@@ -890,7 +911,7 @@ function releasedOrder() {
     date: ([, e]) => e.at,
   }[relSort.key];
   const cmp = (a, b) => typeof a === 'string' ? a.localeCompare(b, undefined, { numeric: true }) : a - b;
-  return list.sort((x, y) => {
+  return list.filter(releasedKept).sort((x, y) => {
     const a = val(x), b = val(y);
     // Tracks whose duration is unknown go last whichever way the column is sorted.
     const na = !(a === a) || a == null, nb = !(b === b) || b == null;
@@ -926,11 +947,12 @@ const releasedKeys = () => releasedOrder().map(([key]) => key).filter(key => all
 function renderReleased() {
   $('list').className = 'released';
   const list = releasedOrder();
-  $('count').textContent = `${list.length} released`;
+  $('count').textContent = filtered() ? `${list.length} of ${released.size} released` : `${released.size} released`;
   if (!list.length) {
     const li = document.createElement('li');
     li.className = 'empty';
-    li.textContent = 'No released tracks. Point at a track and press the disc at the end of its row to mark it.';
+    li.textContent = released.size ? 'No released tracks match the filter.'
+      : 'No released tracks. Point at a track and press the disc at the end of its row to mark it.';
     $('list').replaceChildren(li);
     return;
   }
@@ -945,6 +967,24 @@ function renderReleased() {
     li.querySelector('.act').append(markButton(key));
     return li;
   }));
+}
+
+// The row that tells where the missing matches went: tracks the filters keep
+// are out of the list because they are marked. Clicking it opens the Released
+// list, which the same filters narrow to those tracks. all is every match
+// being marked, so the list has nothing else to show.
+function releasedNote(n, all) {
+  const li = document.createElement('li');
+  li.className = 'more';
+  li.innerHTML = ICON_MARK;
+  const text = document.createElement('span');
+  text.textContent = all
+    ? (n === 1 ? 'The only match is marked as released.' : `All ${n} matches are marked as released.`)
+    : (n === 1 ? '1 more match is marked as released.' : `${n} more matches are marked as released.`);
+  li.append(text);
+  li.title = 'Show in the Released list';
+  li.onclick = () => setShowReleased(true);
+  return li;
 }
 
 function render() {
@@ -990,6 +1030,11 @@ function render() {
     rows.push(li);
   }
 
+  const hidden = hiddenMatches();
+  if (allTracks.size && !tracks.size && hidden) {
+    $('list').replaceChildren(...rows, releasedNote(hidden, true));
+    return;
+  }
   if (allTracks.size && !tracks.size) {
     const li = document.createElement('li');
     li.className = 'empty';
@@ -1017,7 +1062,7 @@ function render() {
     li.querySelector('.act').append(markButton(key));
     li.onclick = () => play(key);
     return li;
-  }));
+  }), ...(hidden ? [releasedNote(hidden, false)] : []));
 }
 
 function updateMediaSession(key, file) {
@@ -1077,13 +1122,14 @@ for (const el of $('head').children) {
 }
 // History and Released each take the list's place; opening one closes the other.
 $('show-played').onclick = () => { showPlayed = !showPlayed; showReleased = false; render(); showCount(); };
-$('show-released').onclick = () => {
-  showReleased = !showReleased;
+function setShowReleased(on) {
+  showReleased = on;
   showPlayed = false;
   if (showReleased) { relSort = { key: 'date', dir: -1 }; relShuffled = []; }
   render();
   showCount();
-};
+}
+$('show-released').onclick = () => setShowReleased(!showReleased);
 // Changing a filter starts a new round over the tracks it keeps, and never
 // touches the track playing: a started track, sounding or paused, carries on.
 // Still in range, it moves to the top; left out, it stays on top of the list,
